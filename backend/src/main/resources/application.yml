@@ -1,0 +1,24 @@
+server:
+  port: 8081
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/tasks
+    username: app
+    password: app
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate.format_sql: true
+      hibernate.jdbc.time_zone: UTC
+
+app:
+  jwt:
+    secret: "change-this-very-long-secret-key"
+    accessMinutes: 15
+    refreshDays: 7
+
+logging:
+  level:
+    org.springframework.security: INFO
