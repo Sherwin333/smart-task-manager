@@ -1,22 +1,38 @@
-import { useState } from 'react';
-import axios from 'axios';
+import { useState } from "react";
+import api from "../api/client";
 
 export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const submit = async (e:any) => {
+  const [email, setEmail] = useState("admin@example.com");
+  const [password, setPassword] = useState("admin123");
+  const [error, setError] = useState("");
+
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { data } = await axios.post('/api/auth/login', { email, password });
-    localStorage.setItem('accessToken', data.accessToken);
-    localStorage.setItem('refreshToken', data.refreshToken);
-    location.href='/';
+    setError("");
+    try {
+      const res = await api.post<{ token: string }>("/api/auth/login", { email, password });
+      localStorage.setItem("token", res.data.token);
+      window.location.assign("/"); // go to Home
+    } catch (err: any) {
+      setError(err?.response?.data?.message || "Login failed");
+    }
   };
+
   return (
-    <form onSubmit={submit} style={{maxWidth:360,margin:'64px auto',display:'grid',gap:8}}>
-      <h2>Login</h2>
-      <input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} />
-      <input placeholder="Password" type="password" value={password} onChange={e=>setPassword(e.target.value)} />
-      <button type="submit">Sign in</button>
-    </form>
+    <div style={{ maxWidth: 380, margin: "6rem auto", padding: 24, border: "1px solid #ddd", borderRadius: 12 }}>
+      <h2 style={{ marginBottom: 16 }}>Sign in</h2>
+      <form onSubmit={onSubmit}>
+        <label>Email</label>
+        <input value={email} onChange={e => setEmail(e.target.value)} type="email" required
+               style={{ width: "100%", padding: 8, margin: "6px 0 12px" }} />
+        <label>Password</label>
+        <input value={password} onChange={e => setPassword(e.target.value)} type="password" required
+               style={{ width: "100%", padding: 8, margin: "6px 0 12px" }} />
+        {error && <div style={{ color: "crimson", marginBottom: 12 }}>{error}</div>}
+        <button type="submit" style={{ padding: "8px 14px", border: "none", borderRadius: 8, cursor: "pointer" }}>
+          Login
+        </button>
+      </form>
+    </div>
   );
 }

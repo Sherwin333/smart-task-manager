@@ -1,28 +1,25 @@
-import axios from 'axios';
+import axios from "axios";
 
-const api = axios.create({ baseURL: '/api' });
+const api = axios.create({ baseURL: "http://localhost:8081" });
 
-api.interceptors.request.use((cfg) => {
-  const t = localStorage.getItem('accessToken');
-  if (t) cfg.headers.Authorization = `Bearer ${t}`;
-  return cfg;
+api.interceptors.request.use((config) => {
+  const t = localStorage.getItem("token");
+  if (t) config.headers.Authorization = `Bearer ${t}`;
+  return config;
 });
 
+// Important: don't redirect on /api/auth/login failures
 api.interceptors.response.use(
   (r) => r,
-  async (err) => {
-    const original = err.config;
-    if (err.response?.status === 401 && !original._retry) {
-      original._retry = true;
-      const rt = localStorage.getItem('refreshToken');
-      if (rt) {
-        const { data } = await axios.post('/api/auth/refresh', { refreshToken: rt }); // separate instance on purpose
-        localStorage.setItem('accessToken', data.accessToken);
-        original.headers.Authorization = `Bearer ${data.accessToken}`;
-        return api.request(original);
-      }
+  (e) => {
+    const status = e?.response?.status;
+    const url = e?.config?.url || "";
+    if (status === 401 && !url.includes("/api/auth/login")) {
+      localStorage.removeItem("token");
+      // use assign to avoid history pileup
+      window.location.assign("/login");
     }
-    return Promise.reject(err);
+    return Promise.reject(e);
   }
 );
 
