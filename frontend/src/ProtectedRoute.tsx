@@ -1,5 +1,13 @@
 // src/ProtectedRoute.tsx
-import { Navigate, Outlet } from "react-router-dom";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
+
 export default function ProtectedRoute() {
-  return localStorage.getItem("token") ? <Outlet /> : <Navigate to="/login" replace />;
+  const token = localStorage.getItem("token");
+  const location = useLocation();
+
+  // If no token, bounce to /login and remember where we were going
+  if (!token) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+  return <Outlet />;
 }
