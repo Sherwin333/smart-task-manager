@@ -1,145 +1,123 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import Board from "../components/Board";
 import type { Task } from "../components/Board";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import toast from "react-hot-toast";
+
+const token = () => localStorage.getItem("token") ?? "";
+
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token()}`,
+      ...(init?.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem("token");
+    window.location.assign("/login");
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${await res.text().catch(()=> "")}`);
+  return res.json().catch(() => undefined as T);
+}
 
 export default function BoardPage() {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [error, setError] = useState<string>("");
-  const [loading, setLoading] = useState<boolean>(true);
-  const [newTitle, setNewTitle] = useState<string>("");
+  const qc = useQueryClient();
+  const [newTitle, setNewTitle] = useState("");
 
-  const token = () => localStorage.getItem("token") ?? "";
+  // Load
+  const { data: tasks = [], isLoading, error } = useQuery({
+    queryKey: ["tasks"],
+    queryFn: async () => {
+      if (!token()) throw new Error("No token found. Please log in again.");
+      return api<Task[]>("/api/tasks");
+    },
+    retry: 1,
+  });
 
-  const handleUnauthorized = (status?: number) => {
-    if (status === 401) {
-      localStorage.removeItem("token");
-      window.location.assign("/login");
-      return true;
-    }
-    return false;
-  };
+  // Create
+  const createTask = useMutation({
+    mutationFn: (title: string) => api<Task>("/api/tasks", { method: "POST", body: JSON.stringify({ title, status: "Todo" }) }),
+    onSuccess: () => { toast.success("Task added"); qc.invalidateQueries({ queryKey: ["tasks"] }); },
+    onError: (e: any) => toast.error(e.message || "Create failed"),
+  });
 
-  const fetchTasks = async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const t = token();
-      if (!t) {
-        setError("No token found. Please log in again.");
-        return;
-      }
-      const res = await fetch("/api/tasks", { headers: { Authorization: `Bearer ${t}` } });
-      if (handleUnauthorized(res.status)) return;
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`GET /api/tasks failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`);
-      }
-      const data: any[] = await res.json();
-      const normalized: Task[] = (data || []).map((t) => ({
-        id: Number(t.id),
-        title: String(t.title ?? ""),
-        status: (t.status as Task["status"]) ?? "Todo",
-      }));
-      setTasks(normalized);
-    } catch (e: any) {
-      setError(e?.message || "Network error");
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Reorder/Move
+  const reorderTask = useMutation({
+    mutationFn: ({ id, status, index }: { id: number; status: Task["status"]; index: number }) =>
+      api<void>(`/api/tasks/${id}/reorder`, { method: "PATCH", body: JSON.stringify({ status, index }) }),
+    onMutate: async (vars) => {
+      await qc.cancelQueries({ queryKey: ["tasks"] });
+      const prev = qc.getQueryData<Task[]>(["tasks"]) || [];
+      // optimistic re-order
+      const moved = prev.find(t => t.id === vars.id);
+      if (!moved) return { prev };
+      const others = prev.filter(t => t.id !== vars.id);
+      const target = others.filter(t => t.status === vars.status);
+      const notTarget = others.filter(t => t.status !== vars.status);
+      const insertAt = Math.max(0, Math.min(vars.index, target.length));
+      const newCol = [...target.slice(0, insertAt), { ...moved, status: vars.status }, ...target.slice(insertAt)];
+      qc.setQueryData(["tasks"], [...newCol, ...notTarget]);
+      return { prev };
+    },
+    onError: (e, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["tasks"], ctx.prev);
+      toast.error((e as any)?.message || "Move failed");
+    },
+    onSuccess: () => toast.success("Moved"),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["tasks"] }),
+  });
 
-  useEffect(() => { fetchTasks(); }, []);
+  // Edit
+  const editTask = useMutation({
+    mutationFn: ({ id, title }: { id: number; title: string }) =>
+      api<Task>(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
+    onMutate: async ({ id, title }) => {
+      await qc.cancelQueries({ queryKey: ["tasks"] });
+      const prev = qc.getQueryData<Task[]>(["tasks"]) || [];
+      qc.setQueryData(["tasks"], prev.map(t => t.id === id ? { ...t, title } : t));
+      return { prev };
+    },
+    onError: (e, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["tasks"], ctx.prev);
+      toast.error((e as any)?.message || "Update failed");
+    },
+    onSuccess: () => toast.success("Updated"),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["tasks"] }),
+  });
 
-  const addTask = async () => {
+  // Delete
+  const deleteTask = useMutation({
+    mutationFn: (id: number) => api<void>(`/api/tasks/${id}`, { method: "DELETE" }),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: ["tasks"] });
+      const prev = qc.getQueryData<Task[]>(["tasks"]) || [];
+      qc.setQueryData(["tasks"], prev.filter(t => t.id !== id));
+      return { prev };
+    },
+    onError: (e, _id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["tasks"], ctx.prev);
+      toast.error((e as any)?.message || "Delete failed");
+    },
+    onSuccess: () => toast.success("Deleted"),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["tasks"] }),
+  });
+
+  const addTask = () => {
     const title = newTitle.trim();
     if (!title) return;
-    setError("");
-
-    const optimistic: Task = { id: Date.now(), title, status: "Todo" };
-    setTasks((prev) => [optimistic, ...prev]);
     setNewTitle("");
-
-    try {
-      const res = await fetch("/api/tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
-        body: JSON.stringify({ title, status: "Todo" }),
-      });
-      if (handleUnauthorized(res.status)) return;
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      const created = await res.json();
-      setTasks((prev) => [
-        { id: Number(created.id), title: String(created.title), status: created.status as Task["status"] },
-        ...prev.filter((t) => t.id !== optimistic.id),
-      ]);
-    } catch (e: any) {
-      setTasks((prev) => prev.filter((t) => t.id !== optimistic.id));
-      setError(e?.message || "Create failed");
-    }
+    createTask.mutate(title);
   };
 
-  type MoveFn = (taskId: number, toStatus: Task["status"], toIndex?: number) => void;
-  const moveTask: MoveFn = async (taskId, toStatus, toIndex = 0) => {
-    const snapshot = tasks;
-    setTasks((prev) => {
-      const moved = prev.find((t) => t.id === taskId);
-      if (!moved) return prev;
-      const others = prev.filter((t) => t.id !== taskId);
-      const target = others.filter((t) => t.status === toStatus);
-      const notTarget = others.filter((t) => t.status !== toStatus);
-      const insertAt = Math.max(0, Math.min(toIndex, target.length));
-      const newCol = [...target.slice(0, insertAt), { ...moved, status: toStatus }, ...target.slice(insertAt)];
-      return [...newCol, ...notTarget];
-    });
+  const moveTask = (taskId: number, toStatus: Task["status"], toIndex = 0) =>
+    reorderTask.mutate({ id: taskId, status: toStatus, index: toIndex });
 
-    try {
-      const res = await fetch(`/api/tasks/${taskId}/reorder`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
-        body: JSON.stringify({ status: toStatus, index: toIndex }),
-      });
-      if (handleUnauthorized(res.status)) return;
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    } catch (e: any) {
-      setTasks(snapshot);
-      setError(e?.message || "Move failed");
-    }
-  };
-
-  const editTask = async (taskId: number, newTitle: string) => {
-    const title = newTitle.trim();
-    if (!title) return;
-    const snapshot = tasks;
-    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, title } : t)));
-    try {
-      const res = await fetch(`/api/tasks/${taskId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
-        body: JSON.stringify({ title }),
-      });
-      if (handleUnauthorized(res.status)) return;
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    } catch (e: any) {
-      setTasks(snapshot);
-      setError(e?.message || "Update failed");
-    }
-  };
-
-  const deleteTask = async (taskId: number) => {
-    const snapshot = tasks;
-    setTasks((prev) => prev.filter((t) => t.id !== taskId));
-    try {
-      const res = await fetch(`/api/tasks/${taskId}`, { method: "DELETE", headers: { Authorization: `Bearer ${token()}` } });
-      if (handleUnauthorized(res.status)) return;
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    } catch (e: any) {
-      setTasks(snapshot);
-      setError(e?.message || "Delete failed");
-    }
-  };
-
-  if (loading) return <div className="page-loading">Loading…</div>;
-  if (error) return <div className="page-error">{error}</div>;
+  if (isLoading) return <div className="page-loading">Loading…</div>;
+  if (error) return <div className="page-error">{(error as Error).message}</div>;
 
   return (
     <div className="page">
@@ -153,10 +131,15 @@ export default function BoardPage() {
           onChange={(e) => setNewTitle(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && addTask()}
         />
-        <button className="btn" onClick={addTask}>Add</button>
+        <button className="btn" onClick={addTask} disabled={createTask.isPending}>Add</button>
       </div>
 
-      <Board tasks={tasks} onMove={moveTask} onEdit={editTask} onDelete={deleteTask} />
+      <Board
+        tasks={tasks}
+        onMove={moveTask}
+        onEdit={(id, title) => editTask.mutate({ id, title })}
+        onDelete={(id) => deleteTask.mutate(id)}
+      />
     </div>
   );
 }
