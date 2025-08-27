@@ -1,27 +1,56 @@
+// frontend/src/pages/BoardPage.tsx
 import { useState } from "react";
 import Board from "../components/Board";
 import type { Task } from "../components/Board";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
+import { API_BASE } from "../config"; // 👈 central API base
 
 const token = () => localStorage.getItem("token") ?? "";
 
+// HashRouter-friendly login redirect
+const goLogin = () => {
+  // works locally and on GitHub Pages (with HashRouter)
+  window.location.hash = "#/login";
+};
+
+function joinUrl(base: string, path: string) {
+  if (/^https?:\/\//i.test(path)) return path;
+  const a = base.replace(/\/+$/, "");
+  const b = path.replace(/^\/+/, "");
+  return `${a}/${b}`;
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
+  const url = joinUrl(API_BASE, path); // 👈 prefix every call with API_BASE
+
+  const res = await fetch(url, {
     ...init,
+    mode: "cors",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token()}`,
+      Authorization: token() ? `Bearer ${token()}` : "",
       ...(init?.headers || {}),
     },
   });
+
   if (res.status === 401) {
     localStorage.removeItem("token");
-    window.location.assign("/login");
+    goLogin();
     throw new Error("Unauthorized");
   }
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${await res.text().catch(()=> "")}`);
-  return res.json().catch(() => undefined as T);
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+  }
+
+  // Some endpoints may return no body
+  try {
+    return (await res.json()) as T;
+  } catch {
+    return undefined as T;
+  }
 }
 
 export default function BoardPage() {
@@ -40,26 +69,44 @@ export default function BoardPage() {
 
   // Create
   const createTask = useMutation({
-    mutationFn: (title: string) => api<Task>("/api/tasks", { method: "POST", body: JSON.stringify({ title, status: "Todo" }) }),
-    onSuccess: () => { toast.success("Task added"); qc.invalidateQueries({ queryKey: ["tasks"] }); },
+    mutationFn: (title: string) =>
+      api<Task>("/api/tasks", {
+        method: "POST",
+        body: JSON.stringify({ title, status: "Todo" }),
+      }),
+    onSuccess: () => {
+      toast.success("Task added");
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+    },
     onError: (e: any) => toast.error(e.message || "Create failed"),
   });
 
   // Reorder/Move
   const reorderTask = useMutation({
     mutationFn: ({ id, status, index }: { id: number; status: Task["status"]; index: number }) =>
-      api<void>(`/api/tasks/${id}/reorder`, { method: "PATCH", body: JSON.stringify({ status, index }) }),
+      api<void>(`/api/tasks/${id}/reorder`, {
+        method: "PATCH",
+        body: JSON.stringify({ status, index }),
+      }),
     onMutate: async (vars) => {
       await qc.cancelQueries({ queryKey: ["tasks"] });
       const prev = qc.getQueryData<Task[]>(["tasks"]) || [];
+
       // optimistic re-order
-      const moved = prev.find(t => t.id === vars.id);
+      const moved = prev.find((t) => t.id === vars.id);
       if (!moved) return { prev };
-      const others = prev.filter(t => t.id !== vars.id);
-      const target = others.filter(t => t.status === vars.status);
-      const notTarget = others.filter(t => t.status !== vars.status);
+
+      const others = prev.filter((t) => t.id !== vars.id);
+      const target = others.filter((t) => t.status === vars.status);
+      const notTarget = others.filter((t) => t.status !== vars.status);
+
       const insertAt = Math.max(0, Math.min(vars.index, target.length));
-      const newCol = [...target.slice(0, insertAt), { ...moved, status: vars.status }, ...target.slice(insertAt)];
+      const newCol = [
+        ...target.slice(0, insertAt),
+        { ...moved, status: vars.status },
+        ...target.slice(insertAt),
+      ];
+
       qc.setQueryData(["tasks"], [...newCol, ...notTarget]);
       return { prev };
     },
@@ -74,11 +121,14 @@ export default function BoardPage() {
   // Edit
   const editTask = useMutation({
     mutationFn: ({ id, title }: { id: number; title: string }) =>
-      api<Task>(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
+      api<Task>(`/api/tasks/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title }),
+      }),
     onMutate: async ({ id, title }) => {
       await qc.cancelQueries({ queryKey: ["tasks"] });
       const prev = qc.getQueryData<Task[]>(["tasks"]) || [];
-      qc.setQueryData(["tasks"], prev.map(t => t.id === id ? { ...t, title } : t));
+      qc.setQueryData(["tasks"], prev.map((t) => (t.id === id ? { ...t, title } : t)));
       return { prev };
     },
     onError: (e, _vars, ctx) => {
@@ -91,11 +141,12 @@ export default function BoardPage() {
 
   // Delete
   const deleteTask = useMutation({
-    mutationFn: (id: number) => api<void>(`/api/tasks/${id}`, { method: "DELETE" }),
+    mutationFn: (id: number) =>
+      api<void>(`/api/tasks/${id}`, { method: "DELETE" }),
     onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: ["tasks"] });
       const prev = qc.getQueryData<Task[]>(["tasks"]) || [];
-      qc.setQueryData(["tasks"], prev.filter(t => t.id !== id));
+      qc.setQueryData(["tasks"], prev.filter((t) => t.id !== id));
       return { prev };
     },
     onError: (e, _id, ctx) => {
@@ -131,7 +182,9 @@ export default function BoardPage() {
           onChange={(e) => setNewTitle(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && addTask()}
         />
-        <button className="btn" onClick={addTask} disabled={createTask.isPending}>Add</button>
+        <button className="btn" onClick={addTask} disabled={createTask.isPending}>
+          Add
+        </button>
       </div>
 
       <Board
