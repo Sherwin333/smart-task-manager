@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Board from "../components/Board";
 import type { Task } from "../components/Board";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
